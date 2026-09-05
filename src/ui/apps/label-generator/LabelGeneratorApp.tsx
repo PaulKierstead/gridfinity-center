@@ -1,6 +1,13 @@
 "use client";
 
 import {
+  CollapsibleSection,
+  GeneratorPanel,
+  GeneratorPanelActions,
+  GeneratorPanelBody,
+} from "@/ui/components/ui/GeneratorSidebar";
+
+import {
   Check,
   ChevronDown,
   Download,
@@ -29,11 +36,27 @@ import {
 import { ComboboxInput } from "@/ui/components/ui/ComboboxInput";
 import { captureEvent } from "@/ui/analytics/posthog";
 import {
-  GeneratorPanel,
   OpenScadGeneratorShell,
 } from "@/ui/apps/openscad/OpenScadGeneratorShell";
-import { CollapsibleSection } from "@/ui/apps/openscad/parameterControls";
 import type { GridfinityAppProps } from "../types";
+import {
+  driveOptions,
+  getDriveOption,
+  getDriveSvgMarkup,
+  getHardwareSvgMarkup,
+  getHeadProfileOption,
+  getHeadProfileSvgMarkup,
+  headProfileOptions,
+  type DriveId,
+  type HeadProfileId,
+} from "./artwork/fastenerArtwork";
+import { fitLabelMargins, getLabelLayout, scaleLabelMargins } from "./labelLayout";
+import {
+  getLabelTextLayout,
+  getLabelTextStyle,
+} from "./labelText";
+import { labelExportDpi, renderLabelExportPng, renderPrinterPreviewPng, type LabelRasterOptions } from "./labelRaster";
+import { getPrinterMargins, getPrinterPixelSize, maxPrinterDpi, minPrinterDpi, printerPresets } from "./printerPresets";
 import styles from "./label-generator.module.css";
 
 type FastenerId =
@@ -43,7 +66,7 @@ type FastenerId =
   | "hex-bolt"
   | "nut"
   | "washer";
-type ItemTypeId = FastenerId | "custom";
+type ItemTypeId = "screw" | "nut" | "washer" | "custom";
 type StandardMode = "iso" | "din" | "both";
 type MeasurementSystem = "metric" | "imperial";
 type DetailFieldId =
@@ -183,19 +206,53 @@ const fasteners: Array<{
   },
 ];
 const itemTypeOptions = [
-  ...fasteners.map((fastener) => fastener.id),
+  "screw",
+  "nut",
+  "washer",
   "custom",
 ] as const satisfies readonly ItemTypeId[];
 
 const itemTypeDescriptions: Record<ItemTypeId, string> = {
-  "socket-cap": "Cylindrical hex socket cap screws",
-  "button-head": "Low profile rounded socket screws",
-  "flat-head": "Countersunk socket flat head screws",
-  "hex-bolt": "External hex head threaded bolts",
+  screw: "Machine screws and bolts",
   nut: "Hexagonal internally threaded nuts",
   washer: "Flat round spacing and load washers",
   custom: "User supplied artwork and label text",
 };
+
+const defaultArtworkByFastener: Record<
+  FastenerId,
+  { driveId: DriveId; headProfileId: HeadProfileId }
+> = {
+  "socket-cap": { driveId: "hex", headProfileId: "socket" },
+  "button-head": { driveId: "hex", headProfileId: "button" },
+  "flat-head": { driveId: "hex", headProfileId: "countersunk" },
+  "hex-bolt": { driveId: "external-hex", headProfileId: "hex" },
+  nut: { driveId: "external-hex", headProfileId: "hex" },
+  washer: { driveId: "slot", headProfileId: "wafer" },
+};
+
+const fastenerIdByHeadProfile: Record<HeadProfileId, FastenerId> = {
+  socket: "socket-cap",
+  button: "button-head",
+  countersunk: "flat-head",
+  pan: "socket-cap",
+  hex: "hex-bolt",
+  wafer: "socket-cap",
+};
+
+const standardByScrewStyle: Partial<Record<string, string>> = {
+  "socket:hex": "ISO 4762 / DIN 912",
+  "button:hex": "ISO 7380",
+  "countersunk:hex": "ISO 10642 / DIN 7991",
+  "hex:external-hex": "ISO 4017 / DIN 933",
+};
+
+function getScrewStyleStandard(
+  headProfileId: HeadProfileId,
+  driveId: DriveId,
+) {
+  return standardByScrewStyle[`${headProfileId}:${driveId}`] ?? "";
+}
 
 // Edit this map to control pitch/length suggestions for each thread size.
 // `standard` means the coarse pitch for that size and is intentionally omitted
@@ -391,40 +448,7 @@ const detailFields: Record<
 // The renderer below uses these field ids directly, so changing this list is
 // the main place to audit or adjust item-specific detail behavior.
 const detailFieldsByItemType: Record<ItemTypeId, DetailFieldId[]> = {
-  "socket-cap": [
-    "measurementSystem",
-    "threadSize",
-    "pitch",
-    "length",
-    "note",
-    "standard",
-    "qrUrl",
-    "primaryImage",
-    "secondaryImage",
-  ],
-  "button-head": [
-    "measurementSystem",
-    "threadSize",
-    "pitch",
-    "length",
-    "note",
-    "standard",
-    "qrUrl",
-    "primaryImage",
-    "secondaryImage",
-  ],
-  "hex-bolt": [
-    "measurementSystem",
-    "threadSize",
-    "pitch",
-    "length",
-    "note",
-    "standard",
-    "qrUrl",
-    "primaryImage",
-    "secondaryImage",
-  ],
-  "flat-head": [
+  screw: [
     "measurementSystem",
     "threadSize",
     "pitch",
@@ -464,8 +488,17 @@ const detailFieldsByItemType: Record<ItemTypeId, DetailFieldId[]> = {
 
 const defaults = {
   fastenerId: "socket-cap" as FastenerId,
+  driveId: defaultArtworkByFastener["socket-cap"].driveId,
+  headProfileId: defaultArtworkByFastener["socket-cap"].headProfileId,
   itemName: "Custom item",
   sizeId: "35x12",
+  expandedSections: {} as Record<string, boolean>,
+  printerId: "brother-p750w",
+  printerDpi: 360,
+  printerDpiY: 180,
+  marginsMm: getPrinterMargins("brother-p750w", 12)!,
+  usePrinterMargins: true,
+  showPrinterPreview: true,
   customWidthMm: 35,
   customHeightMm: 12,
   measurementSystem: "metric" as MeasurementSystem,
@@ -522,11 +555,23 @@ function readNumber(
 }
 
 function getItemTypeLabel(itemType: string) {
+  if (itemType === "screw") {
+    return "Screw / bolt";
+  }
+
+  if (itemType === "nut") {
+    return "Hex nut";
+  }
+
+  if (itemType === "washer") {
+    return "Flat washer";
+  }
+
   if (itemType === "custom") {
     return "Custom";
   }
 
-  return fasteners.find((fastener) => fastener.id === itemType)?.name ?? itemType;
+  return itemType;
 }
 
 function readStoredLabelSettings(): LabelGeneratorSettings {
@@ -547,12 +592,64 @@ function readStoredLabelSettings(): LabelGeneratorSettings {
       return defaultLabelSettings;
     }
 
+    const storedFastenerId = readString(
+      parsed.fastenerId,
+      defaults.fastenerId,
+      fasteners.map((fastener) => fastener.id),
+    );
+    const storedHeadProfileId = readString(
+      parsed.headProfileId,
+      defaultArtworkByFastener[storedFastenerId].headProfileId,
+      headProfileOptions.map((option) => option.id),
+    );
+    const storedHeadProfile = getHeadProfileOption(storedHeadProfileId);
+    const requestedDriveId = readString(
+      parsed.driveId,
+      defaultArtworkByFastener[storedFastenerId].driveId,
+      driveOptions.map((option) => option.id),
+    );
+    const storedDriveId = (
+      storedHeadProfile.driveIds as readonly DriveId[]
+    ).includes(requestedDriveId)
+      ? requestedDriveId
+      : storedHeadProfile.defaultDriveId;
+
+    const storedMargins = isRecord(parsed.marginsMm) ? parsed.marginsMm : {};
+    const horizontalMargin = Math.max(
+      readNumber(storedMargins.left, defaults.marginsMm.left, 0, maxLabelWidthMm),
+      readNumber(storedMargins.right, defaults.marginsMm.right, 0, maxLabelWidthMm),
+    );
+    const verticalMargin = Math.max(
+      readNumber(storedMargins.top, defaults.marginsMm.top, 0, maxLabelHeightMm),
+      readNumber(storedMargins.bottom, defaults.marginsMm.bottom, 0, maxLabelHeightMm),
+    );
+
+    const printerId = readString(parsed.printerId, defaults.printerId, ["custom", ...printerPresets.map((printer) => printer.id)]);
+    const preset = printerPresets.find((printer) => printer.id === printerId);
+    const storedDpi = Math.round(readNumber(parsed.printerDpi, defaults.printerDpi, minPrinterDpi, maxPrinterDpi));
+    const storedDpiY = Math.round(readNumber(parsed.printerDpiY, storedDpi, minPrinterDpi, maxPrinterDpi));
+    // Legacy presets did not distinguish print modes. Use the preset default;
+    // custom single-DPI settings retain their original square dot grid.
+    const mode = preset && (typeof parsed.printerDpiY === "number"
+      ? preset.modes.find((mode) => mode.dpiX === storedDpi && mode.dpiY === storedDpiY) ?? preset.modes[0]
+      : preset.modes[0]);
+
+    const storedSections = isRecord(parsed.expandedSections) ? parsed.expandedSections : {};
+    const expandedSections = Object.fromEntries(
+      Object.entries(storedSections).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean"),
+    );
+
     return {
-      fastenerId: readString(
-        parsed.fastenerId,
-        defaults.fastenerId,
-        fasteners.map((fastener) => fastener.id),
-      ),
+      expandedSections,
+      printerId,
+      printerDpi: mode?.dpiX ?? storedDpi,
+      printerDpiY: mode?.dpiY ?? storedDpiY,
+      marginsMm: { left: horizontalMargin, right: horizontalMargin, top: verticalMargin, bottom: verticalMargin },
+      usePrinterMargins: typeof parsed.usePrinterMargins === "boolean" ? parsed.usePrinterMargins : defaults.usePrinterMargins,
+      showPrinterPreview: typeof parsed.showPrinterPreview === "boolean" ? parsed.showPrinterPreview : defaults.showPrinterPreview,
+      fastenerId: storedFastenerId,
+      driveId: storedDriveId,
+      headProfileId: storedHeadProfileId,
       itemName:
         typeof parsed.itemName === "string"
           ? parsed.itemName
@@ -674,118 +771,51 @@ function getStandardText(standard: string, mode: StandardMode) {
   return [parts.iso, parts.din].filter(Boolean).join(" / ");
 }
 
-function getSideProfileSvgMarkup(id: FastenerId) {
-  if (id === "nut") {
-    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 70"><path d="M34 14h152l24 21-24 21H34L10 35 34 14Z" fill="white" stroke="black" stroke-width="7" stroke-linejoin="round"/><path d="M76 18c-13 11-13 23 0 34M144 18c13 11 13 23 0 34" fill="none" stroke="black" stroke-width="6" stroke-linecap="round"/><path d="M55 35h110" stroke="black" stroke-width="4" stroke-linecap="round"/></svg>`;
-  }
-
-  if (id === "washer") {
-    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 70"><path d="M20 27h180v16H20V27Z" fill="white" stroke="black" stroke-width="7" stroke-linejoin="round"/><path d="M72 28v14M148 28v14" stroke="black" stroke-width="5"/></svg>`;
-  }
-
-  const head =
-    id === "hex-bolt"
-      ? `<path d="M15 20h27l14 20-14 20H15L4 40 15 20Z" fill="white" stroke="black" stroke-width="6" stroke-linejoin="round"/>`
-      : id === "flat-head"
-        ? `<path d="M6 49 32 18h18l10 31H6Z" fill="white" stroke="black" stroke-width="6" stroke-linejoin="round"/><path d="M24 42h20" stroke="black" stroke-width="5" stroke-linecap="round"/>`
-      : id === "button-head"
-        ? `<path d="M6 45C10 18 49 18 55 45v13H6V45Z" fill="white" stroke="black" stroke-width="6" stroke-linejoin="round"/><path d="M22 39h18" stroke="black" stroke-width="5" stroke-linecap="round"/>`
-        : `<path d="M8 15h48v50H8V15Z" fill="white" stroke="black" stroke-width="6" stroke-linejoin="round"/><path d="M22 28h20M22 40h20M22 52h20" stroke="black" stroke-width="4" stroke-linecap="round"/>`;
-
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 70">${head}<path d="M53 29h147l9 6-9 6H53V29Z" fill="white" stroke="black" stroke-width="6" stroke-linejoin="round"/><path d="M66 29v12M76 29v12M86 29v12M96 29v12M106 29v12M116 29v12M126 29v12M136 29v12M146 29v12M156 29v12M166 29v12M176 29v12M186 29v12" stroke="black" stroke-width="2.4"/><path d="M59 22h139M59 48h139" stroke="black" stroke-width="3" stroke-linecap="round"/></svg>`;
-}
-
-function getTopProfileSvgMarkup(id: FastenerId) {
-  if (id === "nut") {
-    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path d="M28 10h44l23 40-23 40H28L5 50 28 10Z" fill="white" stroke="black" stroke-width="7" stroke-linejoin="round"/><circle cx="50" cy="50" r="20" fill="white" stroke="black" stroke-width="7"/><path d="M35 24h30M35 76h30" stroke="black" stroke-width="4" stroke-linecap="round"/></svg>`;
-  }
-
-  if (id === "washer") {
-    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="39" fill="white" stroke="black" stroke-width="7"/><circle cx="50" cy="50" r="17" fill="white" stroke="black" stroke-width="7"/></svg>`;
-  }
-
-  const outer =
-    id === "hex-bolt"
-      ? `<path d="M28 10h44l23 40-23 40H28L5 50 28 10Z" fill="white" stroke="black" stroke-width="7" stroke-linejoin="round"/>`
-      : id === "flat-head"
-        ? `<circle cx="50" cy="50" r="39" fill="white" stroke="black" stroke-width="7"/><path d="M31 50h38" stroke="black" stroke-width="7" stroke-linecap="round"/>`
-      : id === "button-head"
-        ? `<circle cx="50" cy="50" r="38" fill="white" stroke="black" stroke-width="7"/><circle cx="50" cy="50" r="24" fill="none" stroke="black" stroke-width="3" opacity=".55"/>`
-        : `<circle cx="50" cy="50" r="39" fill="white" stroke="black" stroke-width="7"/>`;
-
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">${outer}<path d="M50 28 69 39v22L50 72 31 61V39l19-11Z" fill="white" stroke="black" stroke-width="6" stroke-linejoin="round"/></svg>`;
-}
-
 function FastenerPicture({
+  compactSideProfile = false,
+  driveId,
+  headProfileId,
   id,
   profile,
 }: {
+  compactSideProfile?: boolean;
+  driveId?: DriveId;
+  headProfileId?: HeadProfileId;
   id: FastenerId;
   profile: "side" | "top";
 }) {
+  const artwork = defaultArtworkByFastener[id];
+  const markup =
+    id === "nut" || id === "washer"
+      ? getHardwareSvgMarkup(id, profile)
+      : profile === "top"
+        ? getDriveSvgMarkup(driveId ?? artwork.driveId)
+        : getHeadProfileSvgMarkup(
+            headProfileId ?? artwork.headProfileId,
+            compactSideProfile,
+            driveId ?? artwork.driveId,
+          );
+  const artworkId =
+    id === "nut" || id === "washer"
+      ? id
+      : profile === "top"
+        ? (driveId ?? artwork.driveId)
+        : (headProfileId ?? artwork.headProfileId);
+
   return (
     <span
       className={
         profile === "top" ? styles.topProfilePicture : styles.sideProfilePicture
       }
-      dangerouslySetInnerHTML={{
-        __html:
-          profile === "top"
-            ? getTopProfileSvgMarkup(id)
-            : getSideProfileSvgMarkup(id),
-      }}
+      data-artwork-id={artworkId}
+      data-artwork-profile={profile}
+      dangerouslySetInnerHTML={{ __html: markup }}
     />
   );
 }
 
-function fitCanvasText(
-  context: CanvasRenderingContext2D,
-  text: string,
-  maxWidth: number,
-  font: (size: number) => string,
-  startSize: number,
-  minSize: number,
-) {
-  let size = startSize;
-  context.font = font(size);
-
-  while (context.measureText(text).width > maxWidth && size > minSize) {
-    size -= 2;
-    context.font = font(size);
-  }
-
-  return size;
-}
-
-function loadImage(src: string) {
-  return new Promise<HTMLImageElement>((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = reject;
-    image.src = src;
-  });
-}
-
 function svgToDataUrl(svg: string) {
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-}
-
-function drawImageContained(
-  context: CanvasRenderingContext2D,
-  image: HTMLImageElement,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-) {
-  const imageRatio = image.naturalWidth / image.naturalHeight;
-  const boxRatio = width / height;
-  const drawWidth = imageRatio > boxRatio ? width : height * imageRatio;
-  const drawHeight = imageRatio > boxRatio ? width / imageRatio : height;
-  const drawX = x + (width - drawWidth) / 2;
-  const drawY = y + (height - drawHeight) / 2;
-
-  context.drawImage(image, drawX, drawY, drawWidth, drawHeight);
 }
 
 function CustomArtworkImage({
@@ -824,12 +854,22 @@ function CustomArtworkPlaceholder({ profile }: { profile: "side" | "top" }) {
 function ItemTypeArtwork({
   customPrimaryImage,
   customSecondaryImage,
+  driveId,
+  headProfileId,
   itemType,
 }: {
   customPrimaryImage: string;
   customSecondaryImage: string;
+  driveId: DriveId;
+  headProfileId: HeadProfileId;
   itemType: ItemTypeId;
 }) {
+  const artworkFastenerId =
+    itemType === "screw"
+      ? fastenerIdByHeadProfile[headProfileId]
+      : itemType === "nut" || itemType === "washer"
+        ? itemType
+        : null;
   const primaryArtwork =
     itemType === "custom" ? (
       customPrimaryImage ? (
@@ -837,9 +877,14 @@ function ItemTypeArtwork({
       ) : (
         <CustomArtworkPlaceholder profile="top" />
       )
-    ) : (
-      <FastenerPicture id={itemType} profile="top" />
-    );
+    ) : artworkFastenerId ? (
+      <FastenerPicture
+        driveId={driveId}
+        headProfileId={headProfileId}
+        id={artworkFastenerId}
+        profile="top"
+      />
+    ) : null;
   const secondaryArtwork =
     itemType === "custom" ? (
       customSecondaryImage ? (
@@ -847,9 +892,14 @@ function ItemTypeArtwork({
       ) : (
         <CustomArtworkPlaceholder profile="side" />
       )
-    ) : (
-      <FastenerPicture id={itemType} profile="side" />
-    );
+    ) : artworkFastenerId ? (
+      <FastenerPicture
+        driveId={driveId}
+        headProfileId={headProfileId}
+        id={artworkFastenerId}
+        profile="side"
+      />
+    ) : null;
 
   return (
     <span className={styles.itemTypeArtwork} aria-hidden="true">
@@ -866,10 +916,14 @@ function ItemTypeArtwork({
 function ItemTypeRow({
   customPrimaryImage,
   customSecondaryImage,
+  driveId,
+  headProfileId,
   itemType,
 }: {
   customPrimaryImage: string;
   customSecondaryImage: string;
+  driveId: DriveId;
+  headProfileId: HeadProfileId;
   itemType: ItemTypeId;
 }) {
   return (
@@ -881,6 +935,8 @@ function ItemTypeRow({
       <ItemTypeArtwork
         customPrimaryImage={customPrimaryImage}
         customSecondaryImage={customSecondaryImage}
+        driveId={driveId}
+        headProfileId={headProfileId}
         itemType={itemType}
       />
     </>
@@ -890,11 +946,15 @@ function ItemTypeRow({
 function ItemTypePicker({
   customPrimaryImage,
   customSecondaryImage,
+  driveId,
+  headProfileId,
   onChange,
   value,
 }: {
   customPrimaryImage: string;
   customSecondaryImage: string;
+  driveId: DriveId;
+  headProfileId: HeadProfileId;
   onChange: (value: ItemTypeId) => void;
   value: ItemTypeId;
 }) {
@@ -975,6 +1035,8 @@ function ItemTypePicker({
         <ItemTypeRow
           customPrimaryImage={customPrimaryImage}
           customSecondaryImage={customSecondaryImage}
+          driveId={driveId}
+          headProfileId={headProfileId}
           itemType={value}
         />
         <ChevronDown aria-hidden="true" size={16} />
@@ -1016,6 +1078,24 @@ function ItemTypePicker({
                 <ItemTypeRow
                   customPrimaryImage={customPrimaryImage}
                   customSecondaryImage={customSecondaryImage}
+                  driveId={
+                    option === "screw"
+                      ? value === "screw"
+                        ? driveId
+                        : defaults.driveId
+                      : option === "nut" || option === "washer"
+                        ? defaultArtworkByFastener[option].driveId
+                        : driveId
+                  }
+                  headProfileId={
+                    option === "screw"
+                      ? value === "screw"
+                        ? headProfileId
+                        : defaults.headProfileId
+                      : option === "nut" || option === "washer"
+                        ? defaultArtworkByFastener[option].headProfileId
+                        : headProfileId
+                  }
                   itemType={option}
                 />
                 {option === value ? <Check aria-hidden="true" size={15} /> : null}
@@ -1025,6 +1105,164 @@ function ItemTypePicker({
               <p className={styles.itemTypeEmpty}>No item types found</p>
             ) : null}
           </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function FastenerStylePicker({
+  driveId,
+  headProfileId,
+  onChange,
+}: {
+  driveId: DriveId;
+  headProfileId: HeadProfileId;
+  onChange: (headProfileId: HeadProfileId, driveId: DriveId) => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const headProfile = getHeadProfileOption(headProfileId);
+  const drive = getDriveOption(driveId);
+  const compatibleDrives = headProfile.driveIds.map((id) =>
+    getDriveOption(id),
+  );
+  const isFixedExternalHex =
+    compatibleDrives.length === 1 && compatibleDrives[0].id === "external-hex";
+
+  function selectHead(nextHeadProfileId: HeadProfileId) {
+    const nextHeadProfile = getHeadProfileOption(nextHeadProfileId);
+    const nextDriveId = (
+      nextHeadProfile.driveIds as readonly DriveId[]
+    ).includes(driveId)
+      ? driveId
+      : nextHeadProfile.defaultDriveId;
+
+    onChange(nextHeadProfileId, nextDriveId);
+  }
+
+  return (
+    <div className={styles.fastenerStylePicker}>
+      <span className={styles.fastenerStyleLabel}>Fastener style</span>
+      <button
+        aria-expanded={isOpen}
+        aria-haspopup="dialog"
+        aria-label="Fastener Style"
+        className={styles.fastenerStyleButton}
+        onClick={() => setIsOpen((open) => !open)}
+        type="button"
+      >
+        <span className={styles.fastenerStyleSummary}>
+          <strong>{headProfile.label}</strong>
+          <span>{drive.label}</span>
+        </span>
+        <span className={styles.fastenerStyleArtwork} aria-hidden="true">
+          <span>
+            <FastenerPicture
+              driveId={driveId}
+              headProfileId={headProfileId}
+              id={fastenerIdByHeadProfile[headProfileId]}
+              profile="top"
+            />
+          </span>
+          <span>
+            <FastenerPicture
+              driveId={driveId}
+              headProfileId={headProfileId}
+              id={fastenerIdByHeadProfile[headProfileId]}
+              profile="side"
+            />
+          </span>
+        </span>
+        <ChevronDown aria-hidden="true" size={16} />
+      </button>
+
+      {isOpen ? (
+        <div
+          aria-label="Choose fastener style"
+          className={styles.fastenerStylePopover}
+          onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget)) {
+              setIsOpen(false);
+            }
+          }}
+          role="dialog"
+        >
+          <div className={styles.fastenerStyleSection}>
+            <strong>Head style</strong>
+            <div
+              aria-label="Head style"
+              className={styles.fastenerHeadGrid}
+              role="group"
+            >
+              {headProfileOptions.map((option) => (
+                <button
+                  aria-label={`Head: ${option.label}`}
+                  aria-pressed={option.id === headProfileId}
+                  key={option.id}
+                  onClick={() => selectHead(option.id)}
+                  type="button"
+                >
+                  <span aria-hidden="true">
+                    <FastenerPicture
+                      compactSideProfile
+                      driveId={option.defaultDriveId}
+                      headProfileId={option.id}
+                      id={fastenerIdByHeadProfile[option.id]}
+                      profile="side"
+                    />
+                  </span>
+                  <small>{option.label}</small>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className={styles.fastenerStyleSection}>
+            <strong>Drive</strong>
+            {isFixedExternalHex ? (
+              <div className={styles.fixedFastenerDrive}>
+                <span aria-hidden="true">
+                  <FastenerPicture
+                    driveId="external-hex"
+                    headProfileId="hex"
+                    id="hex-bolt"
+                    profile="top"
+                  />
+                </span>
+                <span>
+                  <strong>External hex</strong>
+                  <small>Fixed by the hex head style</small>
+                </span>
+              </div>
+            ) : (
+              <div
+                aria-label="Drive"
+                className={styles.fastenerDriveGrid}
+                role="group"
+              >
+                {compatibleDrives.map((option) => (
+                  <button
+                    aria-label={`Drive: ${option.label}`}
+                    aria-pressed={option.id === driveId}
+                    key={option.id}
+                    onClick={() => onChange(headProfileId, option.id)}
+                    type="button"
+                  >
+                    <span aria-hidden="true">
+                      <FastenerPicture
+                        driveId={option.id}
+                        headProfileId={headProfileId}
+                        id={fastenerIdByHeadProfile[headProfileId]}
+                        profile="top"
+                      />
+                    </span>
+                    <small>{option.label}</small>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
         </div>
       ) : null}
     </div>
@@ -1043,8 +1281,23 @@ export function LabelGeneratorApp({ accent }: GridfinityAppProps) {
   } | null>(null);
   const [hasLoadedStoredSettings, setHasLoadedStoredSettings] = useState(false);
   const [fastenerId, setFastenerId] = useState(defaults.fastenerId);
+  const [driveId, setDriveId] = useState(defaults.driveId);
+  const [headProfileId, setHeadProfileId] = useState(defaults.headProfileId);
   const [itemName, setItemName] = useState(defaults.itemName);
   const [sizeId, setSizeId] = useState(defaults.sizeId);
+  const [printerId, setPrinterId] = useState(defaults.printerId);
+  const [printerDpi, setPrinterDpi] = useState(defaults.printerDpi);
+  const [printerDpiY, setPrinterDpiY] = useState(defaults.printerDpiY);
+  const [marginsMm, setMarginsMm] = useState(defaults.marginsMm);
+  const [usePrinterMargins, setUsePrinterMargins] = useState(defaults.usePrinterMargins);
+  const [printerDpiDraft, setPrinterDpiDraft] = useState(String(defaults.printerDpi));
+  const [printerDpiYDraft, setPrinterDpiYDraft] = useState(String(defaults.printerDpiY));
+  const [showPrinterPreview, setShowPrinterPreview] = useState(defaults.showPrinterPreview);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportError, setExportError] = useState("");
+  const [printRaster, setPrintRaster] = useState<{
+    options: LabelRasterOptions; url: string; error: string;
+  } | null>(null);
   const [customWidthMm, setCustomWidthMm] = useState(defaults.customWidthMm);
   const [customHeightMm, setCustomHeightMm] = useState(defaults.customHeightMm);
   const [customWidthDraft, setCustomWidthDraft] = useState(
@@ -1082,9 +1335,7 @@ export function LabelGeneratorApp({ accent }: GridfinityAppProps) {
     scale: 1,
   });
   const [isPreviewPanning, setIsPreviewPanning] = useState(false);
-  const [expandedSections, setExpandedSections] = useState<
-    Record<string, boolean>
-  >({});
+  const [expandedSections, setExpandedSections] = useState(defaults.expandedSections);
   const [previewSurfaceSize, setPreviewSurfaceSize] = useState({
     width: 0,
     height: 0,
@@ -1093,7 +1344,9 @@ export function LabelGeneratorApp({ accent }: GridfinityAppProps) {
   const fastener = getFastener(fastenerId);
   const selectedItemTypeId: ItemTypeId = isCustomArtwork
     ? "custom"
-    : fastenerId;
+    : fastenerId === "nut" || fastenerId === "washer"
+      ? fastenerId
+      : "screw";
   const itemTypeValue = selectedItemTypeId;
   const enabledDetailFields = detailFieldsByItemType[selectedItemTypeId];
   const visibleDetailFields = enabledDetailFields.filter(
@@ -1148,10 +1401,17 @@ export function LabelGeneratorApp({ accent }: GridfinityAppProps) {
       : [trimmedThreadSize, trimmedLength, displayPitch]
           .filter(Boolean)
           .join(" x ");
-  const standardParts = getStandardParts(fastener.standard);
+  const selectedStandard =
+    selectedItemTypeId === "screw"
+      ? getScrewStyleStandard(headProfileId, driveId)
+      : selectedItemTypeId === "nut" || selectedItemTypeId === "washer"
+        ? fastener.standard
+        : "";
+  const hasKnownStandard = selectedStandard.length > 0;
+  const standardParts = getStandardParts(selectedStandard);
   const activeStandardMode =
     standardMode === "din" && !standardParts.din ? "both" : standardMode;
-  const standardText = getStandardText(fastener.standard, activeStandardMode);
+  const standardText = getStandardText(selectedStandard, activeStandardMode);
   const primaryText = isCustomArtwork
     ? trimmedItemName
     : hasDetailField("pitch") && hasDetailField("length")
@@ -1171,6 +1431,77 @@ export function LabelGeneratorApp({ accent }: GridfinityAppProps) {
     trimmedQrUrl.length > 0 &&
     qrCode.source === trimmedQrUrl &&
     qrCode.dataUrl.length > 0;
+  const presetMargins = useMemo(() => getPrinterMargins(printerId, labelSize.heightMm), [printerId, labelSize.heightMm]);
+  const appliedMargins = useMemo(() => fitLabelMargins(
+    usePrinterMargins && presetMargins ? presetMargins : marginsMm,
+    labelSize.widthMm, labelSize.heightMm,
+  ), [usePrinterMargins, presetMargins, marginsMm, labelSize.widthMm, labelSize.heightMm]);
+  const printableWidthMm = labelSize.widthMm - appliedMargins.left - appliedMargins.right;
+  const printableHeightMm = labelSize.heightMm - appliedMargins.top - appliedMargins.bottom;
+
+  function updateMargin(axis: "horizontal" | "vertical", value: string) {
+    const next = Number(value);
+    if (!value.trim() || !Number.isFinite(next)) return;
+    const size = axis === "horizontal" ? labelSize.widthMm : labelSize.heightMm;
+    const maximum = Math.max(0, (size - 1) / 2);
+    const margin = Math.round(Math.min(maximum, Math.max(0, next)) * 100) / 100;
+    setMarginsMm({ ...appliedMargins, ...(axis === "horizontal"
+      ? { left: margin, right: margin } : { top: margin, bottom: margin }) });
+    setUsePrinterMargins(false);
+  }
+  const selectedPrinter = printerPresets.find((printer) => printer.id === printerId);
+  const printerPixelSize = getPrinterPixelSize(labelSize.widthMm, labelSize.heightMm, { dpiX: printerDpi, dpiY: printerDpiY });
+  const rasterOptions = useMemo<LabelRasterOptions>(() => ({
+    widthMm: labelSize.widthMm,
+    heightMm: labelSize.heightMm,
+    resolution: { dpiX: printerDpi, dpiY: printerDpiY },
+    marginsMm: appliedMargins,
+    primaryText,
+    secondaryText,
+    topSource: customPrimaryImage || (isCustomArtwork ? "" : svgToDataUrl(
+      fastenerId === "nut" || fastenerId === "washer"
+        ? getHardwareSvgMarkup(fastenerId, "top") : getDriveSvgMarkup(driveId),
+    )),
+    sideSource: customSecondaryImage || (isCustomArtwork ? "" : svgToDataUrl(
+      fastenerId === "nut" || fastenerId === "washer"
+        ? getHardwareSvgMarkup(fastenerId, "side") : getHeadProfileSvgMarkup(headProfileId, false, driveId),
+    )),
+    qrSource: canShowQr ? qrCode.dataUrl : "",
+    showPrimary: showPrimaryImage,
+    showSecondary: showSecondaryImage,
+    showQr: canShowQr,
+  }), [labelSize.widthMm, labelSize.heightMm, printerDpi, printerDpiY, appliedMargins, primaryText, secondaryText,
+    customPrimaryImage, customSecondaryImage, isCustomArtwork, fastenerId, driveId,
+    headProfileId, canShowQr, qrCode.dataUrl, showPrimaryImage, showSecondaryImage]);
+  const currentPrintRaster = printRaster?.options === rasterOptions ? printRaster : null;
+  useEffect(() => {
+    if (!hasLoadedStoredSettings) return;
+    let active = true;
+    let url = "";
+    renderPrinterPreviewPng(rasterOptions).then((blob) => {
+      if (!active) return;
+      url = URL.createObjectURL(blob);
+      setPrintRaster({ options: rasterOptions, url, error: "" });
+    }).catch((error: unknown) => {
+      if (active) setPrintRaster({
+        options: rasterOptions, url: "",
+        error: error instanceof Error ? error.message : "Could not render the label.",
+      });
+    });
+    return () => {
+      active = false;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [rasterOptions, hasLoadedStoredSettings]);
+
+  function updatePrinterDpi(axis: "x" | "y", value: string) {
+    (axis === "x" ? setPrinterDpiDraft : setPrinterDpiYDraft)(value);
+    const next = Number(value);
+    if (value.trim() && Number.isInteger(next) && next >= minPrinterDpi && next <= maxPrinterDpi) {
+      (axis === "x" ? setPrinterDpi : setPrinterDpiY)(next);
+    }
+  }
+
   const previewRatio = `${labelSize.widthMm} / ${labelSize.heightMm}`;
   const previewWidthPx = labelSize.widthMm * previewPxPerMm;
   const previewHeightPx = labelSize.heightMm * previewPxPerMm;
@@ -1184,6 +1515,25 @@ export function LabelGeneratorApp({ accent }: GridfinityAppProps) {
       }),
     [previewHeightPx, previewSurfaceSize, previewView, previewWidthPx],
   );
+  // Resize the DOM/SVG drawing itself so zoom does not magnify a cached bitmap.
+  const renderedPreviewWidth = previewWidthPx * boundedPreviewView.scale;
+  const renderedPreviewHeight = previewHeightPx * boundedPreviewView.scale;
+  const labelLayout = getLabelLayout(
+    renderedPreviewWidth, renderedPreviewHeight, showPrimaryImage, showSecondaryImage, canShowQr,
+    scaleLabelMargins(appliedMargins, renderedPreviewWidth / labelSize.widthMm, renderedPreviewHeight / labelSize.heightMm),
+  );
+  const labelTextRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const context = document.createElement("canvas").getContext("2d");
+    if (!context || !labelTextRef.current) return;
+    const textLayout = getLabelTextLayout(
+      context, primaryText, secondaryText, labelLayout.contentWidth, labelLayout.copyHeight,
+    );
+    const primary = labelTextRef.current.querySelector("strong");
+    const secondary = labelTextRef.current.querySelector("span");
+    if (primary) Object.assign(primary.style, getLabelTextStyle(textLayout.primary));
+    if (secondary) Object.assign(secondary.style, getLabelTextStyle(textLayout.secondary));
+  }, [primaryText, secondaryText, labelLayout.contentWidth, labelLayout.copyHeight]);
   const previewTransformStyle = {
     "--preview-grid-size": `${
       previewGridSizeMm * previewPxPerMm * boundedPreviewView.scale
@@ -1203,9 +1553,20 @@ export function LabelGeneratorApp({ accent }: GridfinityAppProps) {
     const restoreTimer = window.setTimeout(() => {
       const settings = readStoredLabelSettings();
 
+      setExpandedSections(settings.expandedSections);
       setFastenerId(settings.fastenerId);
+      setDriveId(settings.driveId);
+      setHeadProfileId(settings.headProfileId);
       setItemName(settings.itemName);
       setSizeId(settings.sizeId);
+      setPrinterId(settings.printerId);
+      setPrinterDpi(settings.printerDpi);
+      setPrinterDpiY(settings.printerDpiY);
+      setMarginsMm(settings.marginsMm);
+      setUsePrinterMargins(settings.usePrinterMargins);
+      setPrinterDpiDraft(String(settings.printerDpi));
+      setPrinterDpiYDraft(String(settings.printerDpiY));
+      setShowPrinterPreview(settings.showPrinterPreview);
       setCustomWidthMm(settings.customWidthMm);
       setCustomHeightMm(settings.customHeightMm);
       setCustomWidthDraft(String(settings.customWidthMm));
@@ -1236,9 +1597,18 @@ export function LabelGeneratorApp({ accent }: GridfinityAppProps) {
     }
 
     writeStoredLabelSettings({
+      expandedSections,
       fastenerId,
+      driveId,
+      headProfileId,
       itemName,
       sizeId,
+      printerId,
+      printerDpi,
+      printerDpiY,
+      marginsMm,
+      usePrinterMargins,
+      showPrinterPreview,
       customWidthMm,
       customHeightMm,
       measurementSystem,
@@ -1257,12 +1627,15 @@ export function LabelGeneratorApp({ accent }: GridfinityAppProps) {
       customSecondaryImage,
     });
   }, [
+    expandedSections,
     customPrimaryImage,
     customSecondaryImage,
     customHeightMm,
     customWidthMm,
+    driveId,
     fastenerId,
     hasLoadedStoredSettings,
+    headProfileId,
     isCustomArtwork,
     itemName,
     length,
@@ -1275,6 +1648,12 @@ export function LabelGeneratorApp({ accent }: GridfinityAppProps) {
     showSecondaryImage,
     showStandard,
     sizeId,
+    printerId,
+    printerDpi,
+    printerDpiY,
+    marginsMm,
+    usePrinterMargins,
+    showPrinterPreview,
     standardMode,
     threadSize,
   ]);
@@ -1285,18 +1664,18 @@ export function LabelGeneratorApp({ accent }: GridfinityAppProps) {
       return;
     }
 
-    QRCode.toDataURL(trimmedQrUrl, {
+    QRCode.toString(trimmedQrUrl, {
+      type: "svg",
       errorCorrectionLevel: "M",
       margin: 1,
-      width: 320,
       color: {
         dark: "#000000",
         light: "#ffffff",
       },
     })
-      .then((url) => {
+      .then((svg) => {
         if (isCurrent) {
-          setQrCode({ source: trimmedQrUrl, dataUrl: url });
+          setQrCode({ source: trimmedQrUrl, dataUrl: svgToDataUrl(svg) });
         }
       })
       .catch(() => {
@@ -1412,8 +1791,18 @@ export function LabelGeneratorApp({ accent }: GridfinityAppProps) {
 
   function resetLabel() {
     setFastenerId(defaultLabelSettings.fastenerId);
+    setDriveId(defaultLabelSettings.driveId);
+    setHeadProfileId(defaultLabelSettings.headProfileId);
     setItemName(defaultLabelSettings.itemName);
     setSizeId(defaultLabelSettings.sizeId);
+    setPrinterId(defaultLabelSettings.printerId);
+    setPrinterDpi(defaultLabelSettings.printerDpi);
+    setPrinterDpiY(defaultLabelSettings.printerDpiY);
+    setMarginsMm(defaultLabelSettings.marginsMm);
+    setUsePrinterMargins(defaultLabelSettings.usePrinterMargins);
+    setPrinterDpiDraft(String(defaultLabelSettings.printerDpi));
+    setPrinterDpiYDraft(String(defaultLabelSettings.printerDpiY));
+    setShowPrinterPreview(defaultLabelSettings.showPrinterPreview);
     setCustomWidthMm(defaultLabelSettings.customWidthMm);
     setCustomHeightMm(defaultLabelSettings.customHeightMm);
     setCustomWidthDraft(String(defaultLabelSettings.customWidthMm));
@@ -1447,16 +1836,39 @@ export function LabelGeneratorApp({ accent }: GridfinityAppProps) {
     setLength(nextDetails.length);
   }
 
-  function selectItemType(itemType: string) {
+  function selectItemType(itemType: ItemTypeId) {
     if (itemType === "custom") {
       setIsCustomArtwork(true);
       return;
     }
 
-    if (itemTypeOptions.includes(itemType as ItemTypeId)) {
-      setFastenerId(itemType as FastenerId);
+    if (itemType === "screw") {
+      if (fastenerId === "nut" || fastenerId === "washer") {
+        setFastenerId(defaults.fastenerId);
+        setDriveId(defaults.driveId);
+        setHeadProfileId(defaults.headProfileId);
+      }
+      setIsCustomArtwork(false);
+      return;
+    }
+
+    if (itemType === "nut" || itemType === "washer") {
+      const nextArtwork = defaultArtworkByFastener[itemType];
+      setFastenerId(itemType);
+      setDriveId(nextArtwork.driveId);
+      setHeadProfileId(nextArtwork.headProfileId);
       setIsCustomArtwork(false);
     }
+  }
+
+  function selectFastenerStyle(
+    nextHeadProfileId: HeadProfileId,
+    nextDriveId: DriveId,
+  ) {
+    setFastenerId(fastenerIdByHeadProfile[nextHeadProfileId]);
+    setHeadProfileId(nextHeadProfileId);
+    setDriveId(nextDriveId);
+    setShowStandard(false);
   }
 
   function updateCustomWidth(value: string) {
@@ -1594,7 +2006,14 @@ export function LabelGeneratorApp({ accent }: GridfinityAppProps) {
 
   function renderArtworkFallback(profile: "side" | "top") {
     if (!isCustomArtwork) {
-      return <FastenerPicture id={fastenerId} profile={profile} />;
+      return (
+        <FastenerPicture
+          driveId={driveId}
+          headProfileId={headProfileId}
+          id={fastenerId}
+          profile={profile}
+        />
+      );
     }
 
     return (
@@ -1683,6 +2102,7 @@ export function LabelGeneratorApp({ accent }: GridfinityAppProps) {
                 <span>Show</span>
                 <input
                   checked={showPrimaryImage}
+                  aria-label="Show primary image"
                   onChange={(event) =>
                     setShowPrimaryImage(event.target.checked)
                   }
@@ -1713,6 +2133,7 @@ export function LabelGeneratorApp({ accent }: GridfinityAppProps) {
                 <span>Show</span>
                 <input
                   checked={showSecondaryImage}
+                  aria-label="Show secondary image"
                   onChange={(event) =>
                     setShowSecondaryImage(event.target.checked)
                   }
@@ -1732,7 +2153,9 @@ export function LabelGeneratorApp({ accent }: GridfinityAppProps) {
       case "standard":
         return (
           <div
-            className={`${className} ${!showStandard ? styles.disabledField : ""}`}
+            className={`${className} ${
+              !showStandard || !hasKnownStandard ? styles.disabledField : ""
+            }`}
             key={fieldId}
           >
             <div className={styles.fieldHeader}>
@@ -1740,7 +2163,9 @@ export function LabelGeneratorApp({ accent }: GridfinityAppProps) {
               <span className={styles.inlineCheckbox}>
                 <span>Show</span>
                 <input
+                  aria-label="Show ISO / DIN standard"
                   checked={showStandard}
+                  disabled={!hasKnownStandard}
                   onChange={(event) => setShowStandard(event.target.checked)}
                   type="checkbox"
                 />
@@ -1872,6 +2297,7 @@ export function LabelGeneratorApp({ accent }: GridfinityAppProps) {
                 <span>Show</span>
                 <input
                   checked={showQr}
+                  aria-label="Show QR code"
                   onChange={(event) => setShowQr(event.target.checked)}
                   type="checkbox"
                 />
@@ -1890,110 +2316,29 @@ export function LabelGeneratorApp({ accent }: GridfinityAppProps) {
   }
 
   async function downloadPng() {
-    const pxPerMm = 28;
-    const width = Math.round(labelSize.widthMm * pxPerMm);
-    const height = Math.round(labelSize.heightMm * pxPerMm);
-    const canvas = document.createElement("canvas");
-    const context = canvas.getContext("2d");
-
-    if (!context) {
-      return;
+    if (isExporting) return;
+    setIsExporting(true);
+    setExportError("");
+    try {
+      const blob = await renderLabelExportPng(rasterOptions);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.download = `gridfinity-label-${labelSize.id}-${trimmedThreadSize.toLowerCase() || "custom"}.png`;
+      link.href = url;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      captureEvent("label_exported", {
+        label_size: labelSize.id,
+        label_width_mm: labelSize.widthMm,
+        label_height_mm: labelSize.heightMm,
+        format: "png",
+        export_dpi: labelExportDpi,
+      });
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : "Could not export the label PNG.");
+    } finally {
+      setIsExporting(false);
     }
-
-    canvas.width = width;
-    canvas.height = height;
-    context.fillStyle = "#ffffff";
-    context.fillRect(0, 0, width, height);
-    context.strokeStyle = "#d8d8d8";
-    context.lineWidth = Math.max(2, Math.round(height * 0.012));
-    context.strokeRect(1, 1, width - 2, height - 2);
-
-    const padding = Math.round(height * 0.09);
-    const gap = Math.round(height * 0.07);
-    const qrSize = Math.round(height - padding * 2);
-    const qrX = width - padding - qrSize;
-    const contentX = padding;
-    const contentWidth = Math.max(height, qrX - gap - contentX);
-    const topRowHeight = Math.round((height - padding * 2 - gap) * 0.48);
-    const topArtworkSource =
-      customPrimaryImage ||
-      (isCustomArtwork ? "" : svgToDataUrl(getTopProfileSvgMarkup(fastenerId)));
-    const sideArtworkSource =
-      customSecondaryImage ||
-      (isCustomArtwork ? "" : svgToDataUrl(getSideProfileSvgMarkup(fastenerId)));
-    const shouldDrawPrimary = showPrimaryImage && topArtworkSource;
-    const shouldDrawSecondary = showSecondaryImage && sideArtworkSource;
-    const primaryIconSize = shouldDrawPrimary ? topRowHeight : 0;
-    const textX = contentX + (shouldDrawPrimary ? primaryIconSize + gap : 0);
-    const textWidth = Math.max(height, contentWidth - (textX - contentX));
-    const secondaryY = padding + topRowHeight + gap;
-    const secondaryHeight = height - padding - secondaryY;
-
-    if (shouldDrawPrimary) {
-      const image = await loadImage(topArtworkSource);
-      context.drawImage(image, contentX, padding, primaryIconSize, primaryIconSize);
-    }
-
-    const primarySize = fitCanvasText(
-      context,
-      primaryText,
-      textWidth,
-      (size) => `800 ${size}px Arial, Helvetica, sans-serif`,
-      Math.round(topRowHeight * 0.48),
-      Math.round(topRowHeight * 0.22),
-    );
-
-    context.fillStyle = "#000000";
-    context.textBaseline = "alphabetic";
-    context.font = `800 ${primarySize}px Arial, Helvetica, sans-serif`;
-    context.fillText(
-      primaryText,
-      textX,
-      padding + Math.round(topRowHeight * 0.54),
-    );
-
-    const secondarySize = fitCanvasText(
-      context,
-      secondaryText,
-      textWidth,
-      (size) => `500 ${size}px Arial, Helvetica, sans-serif`,
-      Math.round(topRowHeight * 0.22),
-      Math.round(topRowHeight * 0.12),
-    );
-    context.font = `500 ${secondarySize}px Arial, Helvetica, sans-serif`;
-    context.fillText(
-      secondaryText,
-      textX,
-      padding + Math.round(topRowHeight * 0.84),
-    );
-
-    if (shouldDrawSecondary) {
-      const image = await loadImage(sideArtworkSource);
-      drawImageContained(
-        context,
-        image,
-        contentX,
-        secondaryY,
-        contentWidth,
-        secondaryHeight,
-      );
-    }
-
-    if (canShowQr) {
-      const image = await loadImage(qrCode.dataUrl);
-      context.drawImage(image, qrX, padding, qrSize, qrSize);
-    }
-
-    captureEvent("label_exported", {
-      label_size: labelSize.id,
-      label_width_mm: labelSize.widthMm,
-      label_height_mm: labelSize.heightMm,
-      format: "png",
-    });
-    const link = document.createElement("a");
-    link.download = `gridfinity-label-${labelSize.id}-${trimmedThreadSize.toLowerCase() || "custom"}.png`;
-    link.href = canvas.toDataURL("image/png");
-    link.click();
   }
 
   return (
@@ -2005,51 +2350,54 @@ export function LabelGeneratorApp({ accent }: GridfinityAppProps) {
           icon={<SlidersHorizontal aria-hidden="true" size={18} />}
           title="Label Parameters"
         >
-          <div className={styles.panelScroll}>
-            <div className={styles.formShell}>
-              <div data-parameter-section="Type">
-                <CollapsibleSection
-                  title="Type"
-                  expanded={isSectionExpanded("Type", true)}
-                  onExpandedChange={(expanded) =>
-                    setSectionExpanded("Type", expanded)
-                  }
-                >
-                  <div className={styles.fullDetailField}>
-                    <ItemTypePicker
-                      customPrimaryImage={customPrimaryImage}
-                      customSecondaryImage={customSecondaryImage}
-                      onChange={selectItemType}
-                      value={itemTypeValue}
-                    />
-                  </div>
-                  <div className={`${styles.detailsGrid} ${styles.typeDetailsGrid}`}>
-                    {renderDetailField("primaryImage")}
-                    {renderDetailField("secondaryImage")}
-                    {renderDetailField("qrUrl")}
-                  </div>
-                </CollapsibleSection>
+          <GeneratorPanelBody>
+            <CollapsibleSection
+              title="Type"
+              expanded={isSectionExpanded("Type", true)}
+              onExpandedChange={(expanded) =>
+                setSectionExpanded("Type", expanded)
+              }
+            >
+              <div className={styles.fullDetailField}>
+                <ItemTypePicker
+                  customPrimaryImage={customPrimaryImage}
+                  customSecondaryImage={customSecondaryImage}
+                  driveId={driveId}
+                  headProfileId={headProfileId}
+                  onChange={selectItemType}
+                  value={itemTypeValue}
+                />
               </div>
-
-              <div data-parameter-section="Details">
-                <CollapsibleSection
-                  title="Details"
-                  expanded={isSectionExpanded("Details", true)}
-                  onExpandedChange={(expanded) =>
-                    setSectionExpanded("Details", expanded)
-                  }
-                >
-                  <div className={styles.detailsGrid}>
-                    {visibleDetailFields.map((fieldId) =>
-                      renderDetailField(fieldId),
-                    )}
-                  </div>
-                </CollapsibleSection>
+              {selectedItemTypeId === "screw" ? (
+                <FastenerStylePicker
+                  driveId={driveId}
+                  headProfileId={headProfileId}
+                  onChange={selectFastenerStyle}
+                />
+              ) : null}
+              <div className={`${styles.detailsGrid} ${styles.typeDetailsGrid}`}>
+                {renderDetailField("primaryImage")}
+                {renderDetailField("secondaryImage")}
+                {renderDetailField("qrUrl")}
               </div>
-            </div>
-          </div>
+            </CollapsibleSection>
 
-          <div className={styles.panelActions}>
+            <CollapsibleSection
+              title="Details"
+              expanded={isSectionExpanded("Details", true)}
+              onExpandedChange={(expanded) =>
+                setSectionExpanded("Details", expanded)
+              }
+            >
+              <div className={styles.detailsGrid}>
+                {visibleDetailFields.map((fieldId) =>
+                  renderDetailField(fieldId),
+                )}
+              </div>
+            </CollapsibleSection>
+          </GeneratorPanelBody>
+
+          <GeneratorPanelActions>
             <button
               className={styles.secondaryButton}
               onClick={resetLabel}
@@ -2058,15 +2406,32 @@ export function LabelGeneratorApp({ accent }: GridfinityAppProps) {
               <RotateCcw aria-hidden="true" size={16} />
               Reset Label
             </button>
-          </div>
+          </GeneratorPanelActions>
         </GeneratorPanel>
       }
       previewAriaLabel="Label Preview"
       previewTitle="Label Preview"
-      previewStatus={sizeDescription}
+      previewControls={
+        <div className={styles.previewModeControls}>
+          <div className={styles.previewModeSelector} role="group" aria-label="Label preview mode">
+            <button type="button" aria-pressed={!showPrinterPreview} onClick={() => setShowPrinterPreview(false)}>
+              Design
+            </button>
+            <button type="button" aria-pressed={showPrinterPreview} onClick={() => setShowPrinterPreview(true)}>
+              Print Preview
+            </button>
+          </div>
+          {showPrinterPreview ? (
+            <span className={styles.previewDpi} data-testid="preview-dpi" title="Horizontal × vertical printer resolution">
+              {printerDpi} × {printerDpiY} DPI
+            </span>
+          ) : null}
+        </div>
+      }
       preview={
         <div
           aria-label="Label preview viewport"
+          title={sizeDescription}
           className={styles.previewSurface}
           data-panning={isPreviewPanning}
           onPointerCancel={stopPreviewPan}
@@ -2102,32 +2467,54 @@ export function LabelGeneratorApp({ accent }: GridfinityAppProps) {
           >
             <div
               className={styles.label}
+              data-printer-preview={showPrinterPreview}
               style={{
                 aspectRatio: previewRatio,
-                width: `${previewWidthPx}px`,
-                height: `${previewHeightPx}px`,
-              }}
+                width: `${renderedPreviewWidth}px`,
+                height: `${renderedPreviewHeight}px`,
+              } as CSSProperties}
             >
-              <div className={styles.labelContent}>
-                <div className={styles.labelTopRow}>
-                  {showPrimaryImage ? (
-                    <div className={styles.topProfileSlot}>
-                      {customPrimaryImage ? (
-                        <CustomArtworkImage
-                          profile="top"
-                          src={customPrimaryImage}
-                        />
-                      ) : isCustomArtwork ? (
-                        <CustomArtworkPlaceholder profile="top" />
-                      ) : (
-                        <FastenerPicture id={fastenerId} profile="top" />
-                      )}
-                    </div>
+              {showPrimaryImage ? (
+                <div
+                  className={styles.topProfileSlot}
+                  style={{
+                    left: labelLayout.primaryLeft, top: labelLayout.top,
+                    width: labelLayout.edgeSize, height: labelLayout.edgeSize,
+                  }}
+                >
+                  {customPrimaryImage ? (
+                    <CustomArtworkImage profile="top" src={customPrimaryImage} />
+                  ) : isCustomArtwork ? (
+                    <CustomArtworkPlaceholder profile="top" />
+                  ) : (
+                    <FastenerPicture
+                      driveId={driveId}
+                      headProfileId={headProfileId}
+                      id={fastenerId}
+                      profile="top"
+                    />
+                  )}
+                </div>
+              ) : null}
+              <div
+                className={styles.labelContent}
+                style={{
+                  left: labelLayout.contentLeft, top: labelLayout.contentTop,
+                  width: labelLayout.contentWidth, height: labelLayout.contentHeight,
+                  gridTemplateRows: showSecondaryImage
+                    ? `${labelLayout.copyHeight}px minmax(0, 1fr)` : "1fr",
+                  gap: labelLayout.rowGap,
+                }}
+              >
+                <div className={styles.labelCopy} data-testid="label-text" ref={labelTextRef}>
+                  <strong>
+                    {primaryText}
+                  </strong>
+                  {secondaryText ? (
+                    <span>
+                      {secondaryText}
+                    </span>
                   ) : null}
-                  <div className={styles.labelCopy}>
-                    <strong>{primaryText}</strong>
-                    <span>{secondaryText}</span>
-                  </div>
                 </div>
                 {showSecondaryImage ? (
                   <div className={styles.secondaryProfileSlot}>
@@ -2139,14 +2526,44 @@ export function LabelGeneratorApp({ accent }: GridfinityAppProps) {
                     ) : isCustomArtwork ? (
                       <CustomArtworkPlaceholder profile="side" />
                     ) : (
-                      <FastenerPicture id={fastenerId} profile="side" />
+                      <FastenerPicture
+                        driveId={driveId}
+                        headProfileId={headProfileId}
+                        id={fastenerId}
+                        profile="side"
+                      />
                     )}
                   </div>
                 ) : null}
               </div>
               {canShowQr ? (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img className={styles.qrImage} src={qrCode.dataUrl} alt="" />
+                <img
+                  className={styles.qrImage}
+                  data-testid="label-qr"
+                  src={qrCode.dataUrl}
+                  alt=""
+                  style={{
+                    left: labelLayout.qrLeft, top: labelLayout.qrTop,
+                    width: labelLayout.qrSize, height: labelLayout.qrSize,
+                  }}
+                />
+              ) : null}
+              {showPrinterPreview ? (
+                currentPrintRaster?.url ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    className={styles.printerRaster}
+                    data-testid="label-printer-preview"
+                    src={currentPrintRaster.url}
+                    alt={`Printer simulation at ${printerDpi} × ${printerDpiY} DPI (horizontal × vertical): ${printerPixelSize.width} by ${printerPixelSize.height} dots`}
+                    draggable={false}
+                  />
+                ) : (
+                  <div className={styles.printerRasterPending} role="status">
+                    {currentPrintRaster?.error || "Updating print preview…"}
+                  </div>
+                )
               ) : null}
             </div>
           </div>
@@ -2158,9 +2575,12 @@ export function LabelGeneratorApp({ accent }: GridfinityAppProps) {
           icon={<PanelLeft aria-hidden="true" size={18} />}
           title="Output Settings"
         >
-          <div className={styles.panelScroll}>
-            <div className={styles.controlGroup}>
-              <label className={styles.fieldLabel}>Label Size</label>
+          <GeneratorPanelBody>
+            <CollapsibleSection
+              title="Label size"
+              expanded={isSectionExpanded("Label size", true)}
+              onExpandedChange={(expanded) => setSectionExpanded("Label size", expanded)}
+            >
               <div className={styles.sizeGrid}>
                 {labelSizes.map((size) => (
                   <button
@@ -2196,69 +2616,193 @@ export function LabelGeneratorApp({ accent }: GridfinityAppProps) {
                   <small>mm</small>
                 </button>
               </div>
-            </div>
 
-            <div className={styles.customSizeGrid}>
+              <div className={styles.customSizeGrid}>
+                <label className={styles.field}>
+                  <span>Width</span>
+                  <div className={styles.inputWrap}>
+                    <input
+                      aria-label="Custom label width"
+                      inputMode="decimal"
+                      max={maxLabelWidthMm}
+                      min={minLabelWidthMm}
+                      onBlur={commitCustomWidth}
+                      onChange={(event) => updateCustomWidth(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          commitCustomWidth();
+                          event.currentTarget.blur();
+                        }
+                      }}
+                      step="1"
+                      type="text"
+                      value={customWidthDraft}
+                    />
+                    <small>mm</small>
+                  </div>
+                </label>
+                <label className={styles.field}>
+                  <span>Height</span>
+                  <div className={styles.inputWrap}>
+                    <input
+                      aria-label="Custom label height"
+                      inputMode="decimal"
+                      max={maxLabelHeightMm}
+                      min={minLabelHeightMm}
+                      onBlur={commitCustomHeight}
+                      onChange={(event) => updateCustomHeight(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          commitCustomHeight();
+                          event.currentTarget.blur();
+                        }
+                      }}
+                      step="1"
+                      type="text"
+                      value={customHeightDraft}
+                    />
+                    <small>mm</small>
+                  </div>
+                </label>
+              </div>
+
+            </CollapsibleSection>
+            <CollapsibleSection
+              title="Printer"
+              expanded={isSectionExpanded("Printer", true)}
+              onExpandedChange={(expanded) => setSectionExpanded("Printer", expanded)}
+            >
               <label className={styles.field}>
-                <span>Width</span>
-                <div className={styles.inputWrap}>
-                  <input
-                    aria-label="Custom label width"
-                    inputMode="decimal"
-                    max={maxLabelWidthMm}
-                    min={minLabelWidthMm}
-                    onBlur={commitCustomWidth}
-                    onChange={(event) => updateCustomWidth(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        commitCustomWidth();
-                        event.currentTarget.blur();
-                      }
-                    }}
-                    step="1"
-                    type="text"
-                    value={customWidthDraft}
-                  />
-                  <small>mm</small>
-                </div>
+                <span>Label printer</span>
+                <select
+                  aria-label="Label printer"
+                  value={printerId}
+                  onChange={(event) => {
+                    const id = event.target.value;
+                    setMarginsMm(appliedMargins);
+                    setUsePrinterMargins(Boolean(getPrinterMargins(id, labelSize.heightMm)));
+                    setPrinterId(id);
+                    const preset = printerPresets.find((printer) => printer.id === id);
+                    const mode = preset?.modes[0] ?? { dpiX: printerDpi, dpiY: printerDpiY };
+                    setPrinterDpi(mode.dpiX);
+                    setPrinterDpiY(mode.dpiY);
+                    setPrinterDpiDraft(String(mode.dpiX));
+                    setPrinterDpiYDraft(String(mode.dpiY));
+                  }}
+                >
+                  {printerPresets.map((printer) => (
+                    <option key={printer.id} value={printer.id}>{printer.name}</option>
+                  ))}
+                  <option value="custom">Other / custom DPI</option>
+                </select>
               </label>
-              <label className={styles.field}>
-                <span>Height</span>
-                <div className={styles.inputWrap}>
-                  <input
-                    aria-label="Custom label height"
-                    inputMode="decimal"
-                    max={maxLabelHeightMm}
-                    min={minLabelHeightMm}
-                    onBlur={commitCustomHeight}
-                    onChange={(event) => updateCustomHeight(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        commitCustomHeight();
-                        event.currentTarget.blur();
-                      }
-                    }}
-                    step="1"
-                    type="text"
-                    value={customHeightDraft}
-                  />
-                  <small>mm</small>
+              {selectedPrinter ? (
+                selectedPrinter.modes.length > 1 ? (
+                  <label className={styles.field}>
+                    <span>Print resolution</span>
+                    <select
+                      aria-label="Print resolution"
+                      value={`${printerDpi}x${printerDpiY}`}
+                      title="Horizontal × vertical DPI; match your printer's quality setting"
+                      onChange={(event) => {
+                        const mode = selectedPrinter.modes.find((mode) => `${mode.dpiX}x${mode.dpiY}` === event.target.value);
+                        if (!mode) return;
+                        setPrinterDpi(mode.dpiX);
+                        setPrinterDpiY(mode.dpiY);
+                      }}
+                    >
+                      {selectedPrinter.modes.map((mode) => (
+                        <option key={`${mode.dpiX}x${mode.dpiY}`} value={`${mode.dpiX}x${mode.dpiY}`}>
+                          {mode.name} · {mode.dpiX} × {mode.dpiY} DPI
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : <p className={styles.printHint}>{printerDpi} × {printerDpiY} DPI</p>
+              ) : (
+                <div className={styles.marginGrid}>
+                  {(["x", "y"] as const).map((axis) => (
+                    <label className={styles.field} key={axis}>
+                      <span>{axis === "x" ? "Horizontal DPI" : "Vertical DPI"}</span>
+                      <input
+                        type="number"
+                        min={minPrinterDpi}
+                        max={maxPrinterDpi}
+                        step="1"
+                        value={axis === "x" ? printerDpiDraft : printerDpiYDraft}
+                        onChange={(event) => updatePrinterDpi(axis, event.target.value)}
+                        onBlur={() => axis === "x" ? setPrinterDpiDraft(String(printerDpi)) : setPrinterDpiYDraft(String(printerDpiY))}
+                        onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }}
+                      />
+                    </label>
+                  ))}
                 </div>
+              )}
+            </CollapsibleSection>
+            <CollapsibleSection
+              title="Margins"
+              expanded={isSectionExpanded("Margins", true)}
+              onExpandedChange={(expanded) => setSectionExpanded("Margins", expanded)}
+            >
+              <label className={styles.toggleRow}>
+                <span><strong>Use printer margins</strong></span>
+                <input
+                  type="checkbox"
+                  checked={usePrinterMargins && Boolean(presetMargins)}
+                  disabled={!presetMargins}
+                  onChange={(event) => {
+                    setMarginsMm(appliedMargins);
+                    setUsePrinterMargins(event.target.checked);
+                  }}
+                />
               </label>
-            </div>
+              <div className={styles.marginGrid}>
+                {(["horizontal", "vertical"] as const).map((axis) => {
+                  const value = appliedMargins[axis === "horizontal" ? "left" : "top"];
+                  return (
+                    <label className={styles.field} key={axis}>
+                      <span>{axis === "horizontal" ? "Horizontal margin" : "Vertical margin"}</span>
+                      <div className={styles.inputWrap}>
+                        <input
+                          key={`${axis}-${value}`}
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          max={((axis === "horizontal" ? labelSize.widthMm : labelSize.heightMm) - 1) / 2}
+                          title={axis === "horizontal" ? "Each left and right edge" : "Each top and bottom edge"}
+                          defaultValue={Number(value.toFixed(2))}
+                          onBlur={(event) => {
+                            updateMargin(axis, event.target.value);
+                            event.currentTarget.value = String(Number(value.toFixed(2)));
+                          }}
+                          onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }}
+                        />
+                        <small>mm</small>
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+              <p className={styles.printHint} data-testid="printable-area-size">
+                Printable: {Number(printableWidthMm.toFixed(2))} × {Number(printableHeightMm.toFixed(2))} mm
+              </p>
+            </CollapsibleSection>
+          </GeneratorPanelBody>
 
-          </div>
-
-          <div className={styles.panelActions}>
+          <GeneratorPanelActions>
+            {currentPrintRaster?.error ? <p role="alert" className={styles.printHint}>{currentPrintRaster.error}</p> : null}
+            {exportError ? <p role="alert" className={styles.printHint}>{exportError}</p> : null}
             <button
               className={styles.primaryButton}
+              disabled={!hasLoadedStoredSettings || isExporting}
+              aria-busy={isExporting}
               onClick={downloadPng}
               type="button"
             >
               <Download aria-hidden="true" size={16} />
               Download PNG
             </button>
-          </div>
+          </GeneratorPanelActions>
         </GeneratorPanel>
       }
     />

@@ -40,7 +40,7 @@ export const apps = [
       "Design printable labels for bins, drawers, and small part organizers.",
     icon: Tag,
     Component: LabelGeneratorApp,
-    statusTag: "alpha",
+    statusTag: "beta",
     accent: "blue",
   },
 ] as const satisfies readonly GridfinityAppConfig[];

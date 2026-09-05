@@ -74,58 +74,6 @@
   margin-top: 22px;
 }
 
-.panelScroll {
-  flex: 1;
-  min-height: 0;
-  margin-top: 22px;
-  margin-right: -12px;
-  overflow: auto;
-  padding-left: 4px;
-  padding-right: 12px;
-  scrollbar-gutter: stable;
-  scrollbar-color: color-mix(in srgb, var(--muted) 62%, transparent)
-    var(--surface);
-  scrollbar-width: thin;
-}
-
-.panelScroll::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-
-.panelScroll::-webkit-scrollbar-track {
-  border-radius: 999px;
-  background: var(--surface);
-}
-
-.panelScroll::-webkit-scrollbar-thumb {
-  border: 2px solid var(--surface);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--muted) 62%, transparent);
-}
-
-.panelScroll::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--muted) 82%, transparent);
-}
-
-.panelScroll > .controlGroup:first-child {
-  margin-top: 0;
-}
-
-.formShell {
-  display: grid;
-  gap: 18px;
-  padding-bottom: 4px;
-}
-
-.panelActions {
-  flex: 0 0 auto;
-  margin-top: 12px;
-  border-top: 1px solid var(--border);
-  padding-top: 12px;
-  background: var(--surface);
-}
-
 .detailsSection {
   display: grid;
   gap: 12px;
@@ -245,6 +193,15 @@
   display: block;
   width: 100%;
   height: 100%;
+}
+
+.itemTypeArtwork [data-artwork-id] svg,
+.fastenerStyleArtwork [data-artwork-id] svg,
+.fastenerHeadGrid [data-artwork-id] svg,
+.fastenerDriveGrid [data-artwork-id] svg,
+.fixedFastenerDrive [data-artwork-id] svg,
+.artworkPreview [data-artwork-id] svg {
+  filter: var(--monochrome-artwork-filter, none);
 }
 
 .itemTypePicker {
@@ -423,6 +380,241 @@
   color: var(--muted);
   font-size: 13px;
   font-weight: 680;
+}
+
+.fastenerStylePicker {
+  position: relative;
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  margin-top: 12px;
+}
+
+.fastenerStyleLabel {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 720;
+}
+
+.fastenerStyleButton {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 68px auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 60px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 8px 9px 8px 11px;
+  background: var(--field);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.fastenerStyleButton > svg {
+  color: var(--muted);
+}
+
+.fastenerStyleButton[aria-expanded="true"] > svg {
+  transform: rotate(180deg);
+}
+
+.fastenerStyleSummary {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.fastenerStyleSummary strong,
+.fastenerStyleSummary span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fastenerStyleSummary strong {
+  font-size: 14px;
+  font-weight: 780;
+}
+
+.fastenerStyleSummary span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.fastenerStyleArtwork {
+  display: grid;
+  grid-template-columns: 24px 38px;
+  align-items: center;
+  gap: 5px;
+}
+
+.fastenerStyleArtwork > span {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  height: 32px;
+  overflow: hidden;
+}
+
+.fastenerStyleArtwork .topProfilePicture,
+.fastenerStyleArtwork .sideProfilePicture {
+  width: 100%;
+  height: 100%;
+}
+
+.fastenerStyleArtwork .topProfilePicture {
+  height: auto;
+}
+
+.fastenerStyleArtwork .sideProfilePicture {
+  position: absolute;
+  inset: 0;
+  aspect-ratio: auto;
+}
+
+.fastenerStylePopover {
+  display: grid;
+  gap: 14px;
+  width: 100%;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  padding: 12px;
+  background: var(--surface);
+}
+
+.fastenerStyleSection {
+  display: grid;
+  gap: 8px;
+}
+
+.fastenerStyleSection > strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.fastenerHeadGrid,
+.fastenerDriveGrid {
+  display: grid;
+  gap: 7px;
+}
+
+.fastenerHeadGrid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.fastenerDriveGrid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.fastenerHeadGrid button,
+.fastenerDriveGrid button {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 7px;
+  background: var(--field);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+}
+
+.fastenerHeadGrid button {
+  gap: 4px;
+  min-height: 68px;
+  text-align: center;
+}
+
+.fastenerDriveGrid button {
+  gap: 5px;
+  min-height: 72px;
+  text-align: center;
+}
+
+.fastenerHeadGrid button[aria-pressed="true"],
+.fastenerDriveGrid button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--brand-accent) 62%, transparent);
+  background: color-mix(in srgb, var(--brand-accent) 13%, var(--field));
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--brand-accent) 24%, transparent);
+}
+
+.fastenerHeadGrid button > span {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 30px;
+}
+
+.fastenerDriveGrid button > span {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+}
+
+.fastenerHeadGrid .sideProfilePicture,
+.fastenerDriveGrid .topProfilePicture {
+  width: 100%;
+  height: 100%;
+}
+
+.fastenerHeadGrid small,
+.fastenerDriveGrid small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 720;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+}
+
+.fixedFastenerDrive {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 9px;
+  background: var(--field);
+}
+
+.fixedFastenerDrive > span:first-child {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+}
+
+.fixedFastenerDrive .topProfilePicture {
+  width: 100%;
+  height: 100%;
+}
+
+.fixedFastenerDrive > span:last-child {
+  display: grid;
+  gap: 2px;
+}
+
+.fixedFastenerDrive strong {
+  font-size: 13px;
+}
+
+.fixedFastenerDrive small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
 }
 
 .customArtworkImage {
@@ -637,7 +829,6 @@
   display: grid;
   gap: 7px;
   min-width: 0;
-  margin-top: 14px;
 }
 
 .imageField {
@@ -691,8 +882,42 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
-  margin-top: 14px;
 }
+
+.printHint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.printHint a {
+  text-decoration: underline;
+}
+
+.printerRaster,
+.printerRasterPending {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  width: 100%;
+  height: 100%;
+  background: white;
+  pointer-events: none;
+}
+
+.printerRaster {
+  image-rendering: pixelated;
+}
+
+.printerRasterPending {
+  display: grid;
+  place-items: center;
+  color: #000;
+  font-size: 12px;
+}
+
+
 
 .unitPicker {
   position: relative;
@@ -894,69 +1119,65 @@
 }
 
 .labelShadow {
-  position: relative;
+  position: absolute;
+  left: 50%;
+  top: 50%;
   z-index: 1;
-  width: fit-content;
-  max-width: 100%;
+  width: max-content;
   padding: 0;
   background: transparent;
   box-shadow: 0 22px 58px rgba(23, 33, 31, 0.16);
-  transform: translate(var(--preview-pan-x, 0), var(--preview-pan-y, 0))
-    scale(var(--preview-scale, 1));
-  transform-origin: center;
-  will-change: transform;
+  transform: translate(
+    calc(-50% + var(--preview-pan-x, 0px)),
+    calc(-50% + var(--preview-pan-y, 0px))
+  );
 }
 
 .label {
   container-type: size;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-rows: 1fr;
-  align-items: stretch;
-  gap: clamp(5px, 6cqh, 12px);
+  position: relative;
   width: 100%;
-  max-width: 100%;
   min-height: 0;
-  border: 1px dashed rgba(0, 0, 0, 0.18);
-  padding: clamp(5px, 7cqh, 10px);
   overflow: hidden;
   background: #ffffff;
   color: #000000;
 }
 
-.labelContent {
-  display: grid;
-  grid-template-rows: minmax(0, 0.56fr) minmax(0, 0.44fr);
-  min-width: 0;
-  min-height: 0;
-  height: 100%;
-  gap: clamp(3px, 4cqh, 8px);
-  overflow: hidden;
-}
 
-.labelTopRow {
+
+.labelContent {
+  position: absolute;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
-  gap: clamp(5px, 5cqh, 10px);
   overflow: hidden;
 }
 
 .topProfileSlot {
+  position: absolute;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  flex: 0 0 auto;
   place-items: center;
-  aspect-ratio: 1;
+  width: auto;
   height: 100%;
+  aspect-ratio: 1;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .label .topProfilePicture {
-  width: auto;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
   height: 100%;
+  aspect-ratio: auto;
 }
 
 .secondaryProfileSlot {
+  position: relative;
   display: grid;
   min-width: 0;
   min-height: 0;
@@ -965,8 +1186,11 @@
 }
 
 .secondaryProfileSlot .sideProfilePicture {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
+  aspect-ratio: auto;
 }
 
 .secondaryProfileSlot .sideProfilePicture svg {
@@ -975,7 +1199,12 @@
   object-fit: contain;
 }
 
+.secondaryProfileSlot .customArtworkImage {
+  object-position: center;
+}
+
 .qrImage {
+  position: absolute;
   display: block;
   align-self: stretch;
   width: auto;
@@ -988,32 +1217,29 @@
 }
 
 .labelCopy {
-  display: grid;
-  grid-template-rows: minmax(0, 0.68fr) minmax(0, 0.32fr);
-  align-items: stretch;
+  position: relative;
   min-width: 0;
   min-height: 0;
   height: 100%;
-  gap: 0;
   overflow: hidden;
+}
+
+.labelCopy strong,
+.labelCopy span {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  font-family: Arial, Helvetica, sans-serif;
+  text-align: center;
+  white-space: nowrap;
 }
 
 .labelCopy strong {
-  align-self: end;
-  overflow: hidden;
-  font-size: clamp(14px, 28cqh, 40px);
-  line-height: 0.9;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-weight: 800;
 }
 
 .labelCopy span {
-  align-self: start;
-  overflow: hidden;
-  font-size: clamp(7px, 9cqh, 14px);
-  line-height: 1;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-weight: 500;
 }
 
 .sizeGrid {
@@ -1070,6 +1296,56 @@
   accent-color: var(--brand-accent);
 }
 
+.previewModeControls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.previewModeSelector {
+  display: flex;
+  gap: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 3px;
+  background: var(--field);
+}
+
+.previewModeSelector button {
+  min-height: 32px;
+  border: 0;
+  border-radius: 5px;
+  padding: 0 10px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 720;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.previewModeSelector button[aria-pressed="true"] {
+  background: var(--brand-accent);
+  color: var(--accent-button-text);
+}
+
+.previewModeSelector button:focus-visible {
+  outline: 2px solid var(--brand-accent);
+  outline-offset: 2px;
+}
+
+.previewModeControls .previewDpi {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
 @media (max-width: 1260px) {
   .appFrame {
     grid-template-columns: minmax(280px, 340px) minmax(420px, 1fr);
@@ -1082,7 +1358,7 @@
   }
 }
 
-  @media (max-width: 760px) {
+@media (max-width: 760px) {
   .appFrame {
     grid-template-columns: 1fr;
     overflow: auto;
@@ -1115,10 +1391,6 @@
     grid-template-columns: minmax(0, 1fr) auto;
   }
 
-  .labelCopy strong,
-  .labelCopy span {
-    white-space: normal;
-  }
 
   .fastenerGrid,
   .twoColumn,
@@ -1140,4 +1412,10 @@
   .artworkPreview[data-profile="side"] {
     width: 100%;
   }
+}
+
+.marginGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
 }
