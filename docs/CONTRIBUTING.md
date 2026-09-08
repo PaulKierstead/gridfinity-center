@@ -79,6 +79,7 @@ docker build --build-arg GRIDFINITY_COMMIT_SHA="$(git rev-parse HEAD)" -t gridfi
 docker run --rm -p 3000:3000 \
   -e NATIVE_RENDER_URL=http://host.docker.internal:8080 \
   -e NATIVE_RENDER_TOKEN=dev-secret \
+  --add-host=host.docker.internal:host-gateway \
   gridfinity-center
 ```
 
